@@ -12,6 +12,7 @@ build_chats only read the data, which is how tests/replays rebuild the exact pro
 import json
 import re
 import time
+import traceback
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -342,48 +343,65 @@ class Pipeline:
         self.reuse_layers(loaded)
         self.draft_views(loaded, t0)
         self.draft_debts(loaded, t0)
-        results, n_repair = {}, 0
+        results, n_repair, failed = {}, 0, []
         tr = (a.output / "trace.jsonl").open("w", encoding="utf-8")
         for b, (db, meta) in loaded.items():  # one shop at a time: answer all its questions, write results (checkpoint), close
-            tb = time.time()
-            shop = self.setup_shop(b, db, meta)
-            todo = by_shop[b]
-            chats = self.build_chats(shop, todo)
-            tg = time.time()
-            is_behind = lambda: a.deadline and time.time() - t0 > a.deadline * (len(results) + len(todo)) / max(1, len(qs))
-            texts, preds, errs, pools, n_first, n_rep, behind = self.sample(shop, todo, chats, is_behind)
-            n_repair += n_rep
-            decisions = self.decide(todo, preds, pools)
-            t_ans = time.time()
-            # Batched generation: every question of the shop enters the batch when the shop starts (its data reads, views and debt
-            # layer included) and gets its answer when the batch ends, so they share one elapsed time. The per-shop view and debt
-            # drafts made before the loop are shared preparation, like loading the model.
-            elapsed_ms = int(round((t_ans - tb) * 1000))
-            per_q = (t_ans - tb) / max(1, len(todo))
-            layers = {"views": str(a.output / "logs" / f"_views_{b}.json"), **({"debt": str(a.output / "logs" / f"_debt_{b}.json")} if a.debt_views else {})}
-            for n, (q, (r, ans, conf), ts, ps, es, cs, pool) in enumerate(zip(todo, decisions, texts, preds, errs, chats, pools)):
-                results[q["id"]] = r
-                rec = {"id": q["id"], "business_id": b, "question": q["question"], "final": r, "vote": ans, "conf": conf,
-                       "elapsed_seconds": round(per_q, 2), "samples": [{"text": t, "pred": pr, "error": e} for t, pr, e in zip(ts, ps, es)]}
-                if a.save_prompts:  # the system message is SYSTEM / SYSTEM_ALT + rulebook (samples 0..K/2-1 / the rest), the user message is shared
-                    rec["prompt_user"] = cs[0][1]["content"]
-                tr.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-                log = question_log(q, r, elapsed_ms, self._calls[n], self._runs[n],
-                                   {"code": "src/datamate/voting.py::vote, final_answer",
-                                    "inputs": {"answers": [ps[j] for j in pool], "samples": pool, "threshold": a.threshold,
-                                               "out_of_range": q["_oor"], "answer_unanswerable": a.answer_unanswerable},
-                                    "vote": ans, "share": conf}, layers)
-                (self.log_dir / f"{q['id']}.json").write_text(json.dumps(log, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
-            tr.flush()
-            (a.output / "logs" / f"_views_{b}.json").write_text(json.dumps(shop.vinfo, ensure_ascii=False, indent=1), encoding="utf-8")
+            # A failure in one shop (a saved view that no longer builds, a data test, an engine error) costs only that shop's
+            # questions, which stay abstain (0 points), instead of stopping the process and every shop after it in this shard.
+            try:
+                n_repair += self.answer_shop(b, db, meta, by_shop[b], qs, results, tr, t0)
+            except Exception as e:
+                failed.append(b)
+                print(f"[shop error] {b}: {type(e).__name__}: {str(e)[:400]}, its {len(by_shop[b])} questions abstain", flush=True)
+                traceback.print_exc()
+            finally:
+                try:
+                    db.close()
+                except Exception:
+                    pass
             write_submission(a.output / "submission.jsonl", qs, results)
             if getattr(a, "merge_into", None):  # the shared /result/submission.jsonl holds every answer saved so far
                 merge_shards(a.merge_into, a.data / "questions.jsonl", shards=a.output.parent, copy_logs=False, quiet=True)
-            db.close()
-            print(f"[{b}] {len(todo)} q, {sum(r['type'] != 'abstain' for r in (results[q['id']] for q in todo))} answered, "
-                  f"{n_first} repairs, gen {time.time() - tg:.0f}s, total {time.time() - tb:.0f}s{', behind pace: no thinking' if behind else ''}", flush=True)
         tr.close()
+        if failed:
+            print(f"[shop error] {len(failed)} shop(s) failed and abstain: {', '.join(failed)}", flush=True)
         return results, n_repair
+
+    def answer_shop(self, b, db, meta, todo, qs, results, tr, t0):
+        """Answer every question of one shop, write their trace and log records. Returns the number of repair turns."""
+        a = self.a
+        tb = time.time()
+        shop = self.setup_shop(b, db, meta)
+        chats = self.build_chats(shop, todo)
+        tg = time.time()
+        is_behind = lambda: a.deadline and time.time() - t0 > a.deadline * (len(results) + len(todo)) / max(1, len(qs))
+        texts, preds, errs, pools, n_first, n_rep, behind = self.sample(shop, todo, chats, is_behind)
+        decisions = self.decide(todo, preds, pools)
+        t_ans = time.time()
+        # Batched generation: every question of the shop enters the batch when the shop starts (its data reads, views and debt
+        # layer included) and gets its answer when the batch ends, so they share one elapsed time. The per-shop view and debt
+        # drafts made before the loop are shared preparation, like loading the model.
+        elapsed_ms = int(round((t_ans - tb) * 1000))
+        per_q = (t_ans - tb) / max(1, len(todo))
+        layers = {"views": str(a.output / "logs" / f"_views_{b}.json"), **({"debt": str(a.output / "logs" / f"_debt_{b}.json")} if a.debt_views else {})}
+        for n, (q, (r, ans, conf), ts, ps, es, cs, pool) in enumerate(zip(todo, decisions, texts, preds, errs, chats, pools)):
+            results[q["id"]] = r
+            rec = {"id": q["id"], "business_id": b, "question": q["question"], "final": r, "vote": ans, "conf": conf,
+                   "elapsed_seconds": round(per_q, 2), "samples": [{"text": t, "pred": pr, "error": e} for t, pr, e in zip(ts, ps, es)]}
+            if a.save_prompts:  # the system message is SYSTEM / SYSTEM_ALT + rulebook (samples 0..K/2-1 / the rest), the user message is shared
+                rec["prompt_user"] = cs[0][1]["content"]
+            tr.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+            log = question_log(q, r, elapsed_ms, self._calls[n], self._runs[n],
+                               {"code": "src/datamate/voting.py::vote, final_answer",
+                                "inputs": {"answers": [ps[j] for j in pool], "samples": pool, "threshold": a.threshold,
+                                           "out_of_range": q["_oor"], "answer_unanswerable": a.answer_unanswerable},
+                                "vote": ans, "share": conf}, layers)
+            (self.log_dir / f"{q['id']}.json").write_text(json.dumps(log, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+        tr.flush()
+        (a.output / "logs" / f"_views_{b}.json").write_text(json.dumps(shop.vinfo, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"[{b}] {len(todo)} q, {sum(r['type'] != 'abstain' for r in (results[q['id']] for q in todo))} answered, "
+              f"{n_first} repairs, gen {time.time() - tg:.0f}s, total {time.time() - tb:.0f}s{', behind pace: no thinking' if behind else ''}", flush=True)
+        return n_rep
 
 
 def reasoning(call):
