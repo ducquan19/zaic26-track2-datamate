@@ -44,6 +44,7 @@ def parse_args(argv=None):
     p.add_argument("--debt-views", action="store_true", help="canonical debt tables + debt_at(day) written by the LLM per shop (debts.py)")
     p.add_argument("--stock-views", action="store_true", help="lot tables + lot_stock_at(day) written by the LLM per shop with lots and expiry dates (stock.py)")
     p.add_argument("--fuzzy-hits", action="store_true", help="VALUES MATCHING THE QUESTION also lists names written with typos, initials, chat shorthand or a form of address + given name (ingest.fuzzy_hits)")
+    p.add_argument("--fewshot-by", choices=["text", "shape", "hybrid"], default="text", help="few-shot retrieval: word/trigram similarity, question shape (fewshot.SHAPES), or both")
     p.add_argument("--vote-weights", type=json.loads, default={}, help='vote weight per sample kind, e.g. {"repair": 0.5, "thinking": 1.5, "raw": 0.75} (analysis/vote_weights_cv.py fits them)')
     p.add_argument("--save-prompts", action="store_true", help="keep each question's user message in the trace (SFT data from train runs)")
     p.add_argument("--shard", default="0/1", help="i/n: run the i-th of n business shards (one process per GPU)")

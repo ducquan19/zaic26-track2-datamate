@@ -6,6 +6,7 @@ import duckdb
 import pytest
 
 from datamate import stock
+from datamate.fewshot import shape
 from datamate.ingest import fuzzy_hits, norm
 from datamate.pipeline import Pipeline
 from datamate.sqlexec import execute
@@ -123,6 +124,14 @@ def test_fuzzy_noise_seen_on_public_questions():
     assert fuzzy_hits("thang 3/2026 ban duoc bao nhieu", cands("Thang 03 2026", col="_sheet")) == []   # helper columns are no entities
     assert fuzzy_hits("Anh xem giúp em, tháng 12 khách sỉ chiếm bao nhiêu", people) == []               # 'tháng' is no 'Thắng'
     assert fuzzy_hits("So cùng kỳ, doanh thu tháng 4 tăng mấy %", cands("Doãn Thu Thu", col="Tên khách hàng")) == []
+
+
+# ---- question shape --------------------------------------------------------------------------------------------------
+def test_question_shape_tags():
+    assert {"rank", "money", "p_month"} <= shape("Tháng 3 khách nào mua nhiều tiền nhất?")
+    assert {"compare", "share"} <= shape("doanh thu tháng này tăng bao nhiêu % so với tháng trước")
+    assert "debt" in shape("khách còn nợ bao nhiêu") and "lot" in shape("lô nào gần hết hạn")
+    assert "compare" not in shape("thuốc giảm đau bán được bao nhiêu")
 
 
 # ---- weighted vote ---------------------------------------------------------------------------------------------------

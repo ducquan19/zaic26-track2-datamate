@@ -248,7 +248,7 @@ class Pipeline:
     def build_chats(self, shop, todo):
         """Per question: values matching it, its hints, whether its period lies outside the data. Then one chat per prompt."""
         a, bank = self.a, self.bank
-        fuzzy = getattr(a, "fuzzy_hits", False)
+        fuzzy, by = getattr(a, "fuzzy_hits", False), getattr(a, "fewshot_by", "text")
         for q in todo:
             q["_hits"] = entity_hits(shop.db, shop.shown, q["question"], fuzzy=fuzzy)
             q["_periods"] = question_hints(q["question"], q["as_of_date"], shop.db, shop.shown)
@@ -256,7 +256,7 @@ class Pipeline:
                 q["_periods"] = [p for p in q["_periods"] if not p.startswith("LOT STOCK")]
             q["_oor"] = outside(q["_periods"], data_span(shop.meta))
         # examples read the canonical views, so a shop without them gets none
-        return [[chat(s, shop.ctx, q, fewshot.block(bank.retrieve(q["question"], shop.name, a.fewshot_k, debt=bool(shop.debt))) if bank and shop.view and j == 1 else "")
+        return [[chat(s, shop.ctx, q, fewshot.block(bank.retrieve(q["question"], shop.name, a.fewshot_k, debt=bool(shop.debt), by=by)) if bank and shop.view and j == 1 else "")
                  for j, s in enumerate(self.systems)] for q in todo]
 
     # ---- sampling ----------------------------------------------------------------------------------------------------
