@@ -248,8 +248,9 @@ class Pipeline:
     def build_chats(self, shop, todo):
         """Per question: values matching it, its hints, whether its period lies outside the data. Then one chat per prompt."""
         a, bank = self.a, self.bank
+        fuzzy = getattr(a, "fuzzy_hits", False)
         for q in todo:
-            q["_hits"] = entity_hits(shop.db, shop.shown, q["question"])
+            q["_hits"] = entity_hits(shop.db, shop.shown, q["question"], fuzzy=fuzzy)
             q["_periods"] = question_hints(q["question"], q["as_of_date"], shop.db, shop.shown)
             if shop.stock:  # the lot macro replaces the hint telling the samples how to compute lot stock from the raw tables
                 q["_periods"] = [p for p in q["_periods"] if not p.startswith("LOT STOCK")]

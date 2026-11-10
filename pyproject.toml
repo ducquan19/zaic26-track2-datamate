@@ -10,6 +10,7 @@ dependencies = [
     "pandas>=2.2",
     "openpyxl>=3.1",
     "python-calamine>=0.9",
+    "rapidfuzz>=3.9",          # --fuzzy-hits (ingest.fuzzy_hits); without it the typo kind is skipped
 ]
 
 [project.optional-dependencies]

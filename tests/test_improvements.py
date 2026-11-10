@@ -6,6 +6,7 @@ import duckdb
 import pytest
 
 from datamate import stock
+from datamate.ingest import fuzzy_hits, norm
 from datamate.pipeline import Pipeline
 from datamate.sqlexec import execute
 from datamate.voting import sample_kind, sample_weights, vote
@@ -89,6 +90,39 @@ def test_has_lots_and_parse():
     assert stock.parse("NONE") is None
     with pytest.raises(ValueError, match="two"):
         stock.parse("```sql\nSELECT 1\n```")
+
+
+# ---- fuzzy entity hits -----------------------------------------------------------------------------------------------
+def cands(*values, col="Tên món"):
+    return [("t", col, v, norm(v)) for v in values]
+
+
+def test_fuzzy_typo_shorthand_and_initials():
+    got = {v: why for _, _, v, why in fuzzy_hits("hqua ban dc bnhiu ly cf sua da vay", cands("Cà phê sữa đá", "Trà đào", "Bạc xỉu"))}
+    assert set(got) == {"Cà phê sữa đá"}
+    got = {v for _, _, v, _ in fuzzy_hits("tháng 3 bán được mấy ly cpsd", cands("Cà phê sữa đá", "Cà phê đen"))}
+    assert got == {"Cà phê sữa đá"}
+    got = {v for _, _, v, _ in fuzzy_hits("thuoc la vinatba thu ve bao nhieu", cands("Thuốc lá Vinataba", "Thuốc lá Thăng Long"))}
+    assert got == {"Thuốc lá Vinataba"}
+
+
+def test_fuzzy_nickname_needs_a_real_form_of_address():
+    people = cands("Nguyễn Thị Hằng", "Trần Văn Lan", "Lê Thị Lan", col="Tên khách hàng")
+    assert {v for _, _, v, _ in fuzzy_hits("chị Lan còn nợ bao nhiêu", people)} == {"Trần Văn Lan", "Lê Thị Lan"}
+    assert fuzzy_hits("tháng này có hàng nào bán chạy", people) == []   # 'có' (has) is no 'cô'
+    assert fuzzy_hits("chỉ lan can bán được bao nhiêu", people) == []     # 'chỉ' (only) is no 'chị'
+    assert fuzzy_hits("chi lan con no bao nhieu", people) == []                    # no accents: one name is too ambiguous ('bao', 'thang')
+    assert {v for _, _, v, _ in fuzzy_hits("chi thi lan con no bao nhieu", people)} == {"Lê Thị Lan"}  # ... the last two names are not
+    assert fuzzy_hits("chị Lan còn nợ bao nhiêu", cands("Lê Thị Lan", col="Tên món")) == []  # not a person column
+
+
+def test_fuzzy_noise_seen_on_public_questions():
+    people = cands("Nghiêm Anh Minh", "Tăng Phong Bảo", "Châu Duy Thắng", col="Khách hàng")
+    assert fuzzy_hits("Tu dau nam toi nay co bao nhieu don roi? thang sau luon cao hon", people) == []  # 'nam' is no initials, 'bao' / 'thang' no names
+    assert fuzzy_hits("Doanh thu của Cold brew (M) tháng 9", cands("Cold brew (L)")) == []             # another size, not a typo
+    assert fuzzy_hits("thang 3/2026 ban duoc bao nhieu", cands("Thang 03 2026", col="_sheet")) == []   # helper columns are no entities
+    assert fuzzy_hits("Anh xem giúp em, tháng 12 khách sỉ chiếm bao nhiêu", people) == []               # 'tháng' is no 'Thắng'
+    assert fuzzy_hits("So cùng kỳ, doanh thu tháng 4 tăng mấy %", cands("Doãn Thu Thu", col="Tên khách hàng")) == []
 
 
 # ---- weighted vote ---------------------------------------------------------------------------------------------------

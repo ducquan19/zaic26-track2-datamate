@@ -348,11 +348,12 @@ def load_business(root, business, canon=False):
     return db, {"tables": info, "readme": readme}
 
 
-def entity_hits(db, meta, question, limit=12):
-    """Exact values of text columns whose words appear in the question (product/customer names, statuses)."""
+def entity_hits(db, meta, question, limit=12, fuzzy=False):
+    """Exact values of text columns whose words appear in the question (product/customer names, statuses).
+    fuzzy: after those, up to FUZZY_LIMIT values the question names in another way (fuzzy_hits), each marked with its reason."""
     q = norm(question)
     qw = set(q.split("_"))
-    hits = []
+    hits, cands = [], []
     for t in meta["tables"]:
         for col, typ, d, _ in t["columns"]:
             if typ != "VARCHAR" or not d or d > 20000:
@@ -362,8 +363,88 @@ def entity_hits(db, meta, question, limit=12):
                 w = set(nv.split("_"))
                 if len(nv) >= 3 and not nv.isdigit() and (("_" + nv + "_") in ("_" + q + "_") or (len(w) >= 2 and len(w & qw) / len(w) >= 0.75)):
                     hits.append((len(nv), t["name"], col, v))
+                elif fuzzy:
+                    cands.append((t["name"], col, v, nv))
     hits.sort(reverse=True)
-    return [f"{quote(t)}.{quote(c)} = '{v}'" for _, t, c, v in hits[:limit]]
+    out = [f"{quote(t)}.{quote(c)} = '{v}'" for _, t, c, v in hits[:limit]]
+    if fuzzy:
+        seen = {v for *_, v in hits[:limit]}
+        out += [f"{quote(t)}.{quote(c)} = '{v}'  -- {why}" for t, c, v, why in fuzzy_hits(question, cands) if v not in seen]
+    return out
+
+
+# Language-level shorthand (not shop-specific): chat spellings of item words and Vietnamese forms of address before a name
+ABBREV = {"cf": "ca phe", "cafe": "ca phe", "caphe": "ca phe", "coffee": "ca phe", "cfe": "ca phe", "trasua": "tra sua",
+          "bx": "bac xiu", "xm": "xi mang", "ximang": "xi mang"}
+# Forms of address, as written with accents ('chị' Lan, never 'chỉ' / 'có' / 'ba' = only / has / three). Without accents they are
+# ambiguous, so the accent-free forms count only in a question written wholly without accents.
+HONORIFIC = {"anh", "chị", "em", "cô", "chú", "bác", "ông", "bà", "cậu", "dì", "thím", "mợ", "a", "c", "e", "ac", "bro", "sis"}
+HONORIFIC_PLAIN = {"anh", "chi", "co", "chu", "bac", "ong", "cau", "di", "thim", "a", "c", "e"}
+PERSON_COL = re.compile(r"(?:^|_)(?:khach|kh|customer|nguoi|nhan_vien|nv|tho|staff|ten_kh|ho_ten|ten_khach)(?:_|$)")
+FUZZY_LIMIT = 6
+
+
+def _expand(words):
+    """Question words with chat shorthand spelled out ('cf' -> 'ca phe')."""
+    return " ".join(ABBREV[w] if w in ABBREV else w for w in words).split()
+
+
+def fuzzy_hits(question, cands, limit=FUZZY_LIMIT):
+    """Values a question names without writing them as stored: [(table, column, value, reason)], best first.
+      typo     a name written with a typo, a missing word or chat shorthand ('cf sua da' ~ 'Cà phê sữa đá'), by rapidfuzz partial ratio
+               over the accent-free words; at least one whole word of the value (3+ letters) must be in the question
+      initials the initials of a 3+ word name ('cpsd' = 'Cà Phê Sữa Đá')
+      nickname a person called by a form of address and the given name ('chị Lan' ~ 'Nguyễn Thị Lan'); several people with that
+               given name are all listed (the model picks with the rest of the question, or the answer names them)
+    cands: [(table, column, value, norm(value))] of the text columns the exact matching did not keep."""
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:  # the exact hits still work; only the typo kind needs the library
+        fuzz = None
+    words = [w for w in norm(question).split("_") if w]
+    qx = _expand(words)
+    qs, qset = " ".join(qx), set(qx)
+    raw = re.findall(r"\w+", unicodedata.normalize("NFC", question).lower())
+    plain = all(norm(w) == w for w in raw)  # no accent anywhere: the accent-free forms of address are the only hint
+    hon = [w in HONORIFIC or (plain and w in HONORIFIC_PLAIN) for w in raw]
+    nw = [norm(w) for w in raw]
+    # the word after a form of address; with accents it must keep them ('em, tháng 12' names no Thắng)
+    called = {raw[i + 1] for i in range(len(raw) - 1) if hon[i]}
+    called2 = {" ".join(nw[i + 1:i + 3]) for i in range(len(raw) - 2) if hon[i]}
+    def near(w):  # one word of a value written in the question: short words exactly ('m' vs 'l' is another size), longer ones with a typo
+        return w in qset or (fuzz is not None and len(w) >= 5 and any(len(x) >= 4 and fuzz.ratio(w, x) >= 90 for x in qx))  # 'doan' is no typo of 'doanh'
+
+    scored = []
+    for t, c, v, nv in cands:
+        vw = [w for w in nv.split("_") if w]
+        if not vw or nv.isdigit() or len(nv) < 3 or t == "calendar" or str(c).startswith("_"):
+            continue
+        two = " ".join(vw[-2:])
+        # 'chị Lan': the given name after a form of address written with accents; a question without accents needs the last two names
+        # ('chi thu ha'), since 'bao' (bao nhiêu) and 'thang' (tháng) are given names too
+        given = (re.findall(r"\w+", unicodedata.normalize("NFC", str(v)).lower()) or [""])[-1]
+        if len(vw) >= 2 and PERSON_COL.search(ckey(c)) and (two in called2 or (not plain and given in called and len(given) >= 2)):
+            scored.append((90 + 5 * (two in called2), t, c, v, f"nickname: '{two if two in called2 else given}' in the question"))
+            continue
+        ini = "".join(w[0] for w in vw)
+        if len(vw) >= 3 and ini in qset and not re.search(r"[aeiouy]", ini):  # 'cpsd'; 'nam', 'gan', 'nha' are words, not initials
+            scored.append((92, t, c, v, f"initials '{ini}' in the question"))
+            continue
+        if fuzz and len(nv) >= 6 and all(near(w) for w in vw):  # cands are the values the exact matching left out
+            s = fuzz.partial_ratio(" ".join(vw), qs)
+            if s >= 85:
+                scored.append((s, t, c, v, f"close to the question's words ({s:.0f}/100)"))
+    scored.sort(key=lambda x: (-x[0], -len(x[3])))
+    out, nick = [], 0
+    for s, t, c, v, why in scored:
+        if why.startswith("nickname"):
+            nick += 1
+            if nick > 5:
+                continue
+        out.append((t, c, v, why))
+        if len(out) == limit:
+            break
+    return out
 
 
 def schema_text(meta):
