@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from . import debts, fewshot, views
+from . import debts, fewshot, views, voting
 from .hints import DEBT_WORDS, data_span, outside, question_hints
 from .ingest import entity_hits, load_business, norm, profile, schema_text
 from .prompts import NOTES, SYSTEM, SYSTEM_ALT, chat, repair_hint
@@ -65,6 +65,7 @@ class Pipeline:
         self.half = a.k // 2
         self.vtexts, self.vchecked, self.vfixed = {}, {}, {}
         self.dchecked, self.dfixed = {}, {}
+        self.vote_weights = getattr(a, "vote_weights", None) or {}  # {} = every sample one vote (the submitted setup)
         # one log record per question: --log-dir (Docker: /result/logs), else the run's own logs/
         self.log_dir = getattr(a, "log_dir", None) or (a.output / "logs" if getattr(a, "output", None) else None)
         self._calls, self._runs = [], []
@@ -325,12 +326,13 @@ class Pipeline:
         pools = [debt_pool(ts, 2 * half, dq) if a.debt_route else list(range(len(ts))) for ts, dq in zip(texts, debt_q)]
         return texts, preds, errs, pools, len(repair), n_repair, behind
 
-    def decide(self, todo, preds, pools):
-        """(final, vote, confidence) per question."""
+    def decide(self, todo, preds, pools, texts=None):
+        """(final, vote, confidence) per question. With --vote-weights each sample counts by its kind (voting.sample_weights)."""
         out = []
-        for q, ps, pool in zip(todo, preds, pools):
+        for n, (q, ps, pool) in enumerate(zip(todo, preds, pools)):
             voters = [ps[j] for j in pool]
-            ans, conf = vote(voters, len(voters))
+            w = voting.sample_weights([texts[n][j] for j in pool], 2 * self.half, self.vote_weights, pool) if self.vote_weights and texts else None
+            ans, conf = vote(voters, len(voters), weights=w)
             out.append((final_answer(ans, conf, self.a.threshold, q["_oor"], self.a.answer_unanswerable), ans, conf))
         return out
 
@@ -376,7 +378,7 @@ class Pipeline:
         tg = time.time()
         is_behind = lambda: a.deadline and time.time() - t0 > a.deadline * (len(results) + len(todo)) / max(1, len(qs))
         texts, preds, errs, pools, n_first, n_rep, behind = self.sample(shop, todo, chats, is_behind)
-        decisions = self.decide(todo, preds, pools)
+        decisions = self.decide(todo, preds, pools, texts)
         t_ans = time.time()
         # Batched generation: every question of the shop enters the batch when the shop starts (its data reads, views and debt
         # layer included) and gets its answer when the batch ends, so they share one elapsed time. The per-shop view and debt
@@ -394,7 +396,8 @@ class Pipeline:
             log = question_log(q, r, elapsed_ms, self._calls[n], self._runs[n],
                                {"code": "src/datamate/voting.py::vote, final_answer",
                                 "inputs": {"answers": [ps[j] for j in pool], "samples": pool, "threshold": a.threshold,
-                                           "out_of_range": q["_oor"], "answer_unanswerable": a.answer_unanswerable},
+                                           "out_of_range": q["_oor"], "answer_unanswerable": a.answer_unanswerable,
+                                           **({"weights": voting.sample_weights([ts[j] for j in pool], 2 * self.half, self.vote_weights, pool)} if self.vote_weights else {})},
                                 "vote": ans, "share": conf}, layers)
             (self.log_dir / f"{q['id']}.json").write_text(json.dumps(log, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
         tr.flush()

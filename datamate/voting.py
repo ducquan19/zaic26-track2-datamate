@@ -1,6 +1,7 @@
 """From executed samples to one answer: answer keys that follow the scorer, the debt-question voting pool, the majority
 vote and the decision to answer or abstain."""
 import json
+import re
 import unicodedata
 from collections import Counter, defaultdict
 
@@ -47,22 +48,51 @@ def debt_pool(texts, start, debt_q=False):
     return list(range(len(texts)))
 
 
-def vote(preds, k):
+LAYER_CALL = re.compile(r"\b(?:debt_(?:at|new|repaid)|lot_stock_at)\s*\(")
+VIEW_READ = re.compile(r"(?i)\bv_(?:sales|orders)(?:_all)?\b")
+
+
+def sample_kind(text, j, start):
+    """(thinking, repaired, route) of sample j: thinking samples come after the `start` plain ones; route is what the executed
+    query reads, 'macro' (a debt or lot macro), 'view' (the canonical views) or 'raw' (only the shop's own tables)."""
+    sql = parse(text.split("\n#REPAIR\n")[-1])[1] or ""
+    route = "macro" if LAYER_CALL.search(sql) else "view" if VIEW_READ.search(sql) else "raw"
+    return j >= start or "<think>" in text, "\n#REPAIR\n" in text, route
+
+
+def sample_weights(texts, start, w, idx=None):
+    """Vote weight of each sample: the product of its kind's factors in w (keys thinking, plain, repair, macro, view, raw; a
+    missing key is 1). idx: the samples' own indices when texts is a voting pool. An empty w gives every sample 1."""
+    out = []
+    for n, t in enumerate(texts):
+        think, rep, route = sample_kind(t, idx[n] if idx is not None else n, start)
+        out.append(w.get("thinking" if think else "plain", 1.0) * (w.get("repair", 1.0) if rep else 1.0) * w.get(route, 1.0))
+    return out
+
+
+def vote(preds, k, weights=None):
     """Majority over executed answers. Confidence = share of all K samples agreeing. A number and a percent of the same
     value are one answer: Qwen3.5 labels a % change either way (public: 38 abstains were such a split), so the group
-    takes its commoner label, percent on a tie, and that label's commonest value."""
+    takes its commoner label, percent on a tie, and that label's commonest value.
+    weights (one per pred, failed samples included): the group with the largest weight wins and confidence is its share of
+    the total weight. Without weights every sample counts 1, so the result is the plain vote."""
     dump = lambda p: json.dumps(p, ensure_ascii=False, default=str, sort_keys=True)
-    groups = defaultdict(list)
-    for p in preds:
+    plain = weights is None
+    weights = [1.0] * len(preds) if plain else list(weights)
+    groups, mass = defaultdict(list), defaultdict(float)
+    for p, w in zip(preds, weights):
         if p:
             groups[answer_key(p)].append(p)
+            mass[answer_key(p)] += w
     if not groups:
         return {"type": "abstain"}, 0.0
-    best = max(groups.values(), key=len)  # first seen on a tie, as Counter.most_common
+    top = max(groups, key=lambda g: mass[g])  # first seen on a tie, as Counter.most_common
+    best = groups[top]
     types = Counter(p["type"] for p in best)
     kind = "percent" if types["percent"] and types["percent"] >= types["number"] else max(types, key=types.get)
     pick = Counter(dump(p) for p in best if p["type"] == kind).most_common(1)[0][0]
-    return json.loads(pick), len(best) / k
+    total = sum(weights)
+    return json.loads(pick), len(best) / k if plain else (mass[top] / total if total else 0.0)
 
 
 def decide(ans, conf, threshold):
