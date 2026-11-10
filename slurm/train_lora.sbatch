@@ -3,9 +3,12 @@
 #   sbatch slurm/train_lora.sbatch                                   # LoRA v4: continue v3 on data/sft/sql_rft_v3_notes.jsonl
 #   sbatch --export=ALL,DATA=...,OUT=...,INIT=...,MAX_LEN=...,LR=... slurm/train_lora.sbatch
 #   sbatch --export=ALL,EXTRA="--limit-rows 50 --max-steps 5" --time=00:30:00 slurm/train_lora.sbatch   # quick setup check
-# Partition, GPU type and modules are site-specific: override them on the sbatch command line or edit the lines below.
+# Set for the team's cluster (partition batch, account compute-account, A100-40GB nodes gpu01-03). Another cluster: edit the
+# #SBATCH lines below or override them on the sbatch command line. gpu04 holds V100s, which have no bf16: excluded.
 #SBATCH --job-name=lora
-#SBATCH --partition=gpu
+#SBATCH --partition=batch
+#SBATCH --account=compute-account
+#SBATCH --exclude=gpu04
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -15,7 +18,7 @@
 #SBATCH --output=logs/%x-%j.out
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
-# module load cuda/12.8
+# no CUDA module needed: the torch wheel brings its CUDA runtime (cu126 on a 12.x driver, see slurm/README.md)
 
 DATA=${DATA:-data/sft/sql_rft_v3_notes.jsonl}
 OUT=${OUT:-runs/lora/sql_rft_v4}
