@@ -6,7 +6,7 @@ import threading
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from .hints import DEBT_WORDS
+from .hints import DEBT_WORDS, LOT
 from .ingest import norm
 
 DEBT_CALL = re.compile(r"debt_(at|new|repaid)\s*\(")
@@ -96,11 +96,18 @@ CHANGE = re.compile(r"(?:^|_)(?:tang|giam(?!_(?:dau|gia|can|beo|mo|sot))|thay_do
 GROSS = re.compile(r"(?:^|_)(?:lai_gop|loi_nhuan_gop|lai_go)(?:_|$)")
 
 
-def has_debt_layer(db):
+def has_macro(db, name):
     try:
-        return bool(db.execute("SELECT count(*) FROM duckdb_functions() WHERE function_name = 'debt_at'").fetchone()[0])
+        return bool(db.execute("SELECT count(*) FROM duckdb_functions() WHERE function_name = ?", [name]).fetchone()[0])
     except Exception:
         return False
+
+
+def has_debt_layer(db):
+    return has_macro(db, "debt_at")
+
+
+LOT_CALL = re.compile(r"\blot_stock_at\s*\(")
 
 
 def execute(db, text, question="", trace=None):
@@ -120,6 +127,10 @@ def execute(db, text, question="", trace=None):
         # train, shops with a debt layer: macro samples 740/816 right, raw-table samples 21/504, no question only a raw sample solved
         raise ValueError("this shop has the debt layer: answer a debt question with its macros, debt_at(DATE 'X') for what is owed at the end of a day, "
                          "debt_new(DATE 'A', DATE 'B') for new debt and debt_repaid(DATE 'A', DATE 'B') for repayments in a period (see DEBTS), not from the raw tables")
+    if LOT.search(norm(question)) and not LOT_CALL.search(sql) and has_macro(db, "lot_stock_at"):
+        # train: the lot macro and its recipes give the gold answer on 10/10 lot questions of biz_123 / biz_124 (hand-mapped layer)
+        raise ValueError("this shop has the lot layer: answer a lot / expiry question with lot_stock_at(DATE 'D') (one row per lot still in stock at the end of day D, "
+                         "with expiry_date, stock, value; see LOTS), not from the raw lot tables")
     if trace is not None:
         trace["sql"] = sql.rstrip(";")
     names, rows = run_sql(db, sql.rstrip(";"))

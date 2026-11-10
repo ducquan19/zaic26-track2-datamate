@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-from . import debts, fewshot, views, voting
+from . import debts, fewshot, stock, views, voting
 from .hints import DEBT_WORDS, data_span, outside, question_hints
 from .ingest import entity_hits, load_business, norm, profile, schema_text
 from .prompts import NOTES, SYSTEM, SYSTEM_ALT, chat, repair_hint
@@ -51,6 +51,7 @@ class Shop:
     shown: dict
     view: str = ""
     debt: str = ""
+    stock: str = ""
     ctx: str = ""
     vinfo: dict = field(default_factory=dict)
 
@@ -65,6 +66,7 @@ class Pipeline:
         self.half = a.k // 2
         self.vtexts, self.vchecked, self.vfixed = {}, {}, {}
         self.dchecked, self.dfixed = {}, {}
+        self.schecked, self.sfixed = {}, {}
         self.vote_weights = getattr(a, "vote_weights", None) or {}  # {} = every sample one vote (the submitted setup)
         # one log record per question: --log-dir (Docker: /result/logs), else the run's own logs/
         self.log_dir = getattr(a, "log_dir", None) or (a.output / "logs" if getattr(a, "output", None) else None)
@@ -91,6 +93,8 @@ class Pipeline:
             print(f"views of {len(self.vfixed)}/{len(loaded)} shops reused from {a.views_from}", flush=True)
         if a.debt_views and a.views_from:
             self.dfixed = {b: json.loads(f.read_text(encoding="utf-8")) for b in loaded if (f := a.views_from / "logs" / f"_debt_{b}.json").exists()}
+        if getattr(a, "stock_views", False) and a.views_from:
+            self.sfixed = {b: json.loads(f.read_text(encoding="utf-8")) for b in loaded if (f := a.views_from / "logs" / f"_stock_{b}.json").exists()}
 
     def draft_views(self, loaded, t0):
         """Per shop: a.k drafts of one mapping SELECT, data tests, up to 2 repairs. A second set when there is no majority."""
@@ -145,6 +149,41 @@ class Pipeline:
             for b, r in dround(weak, a.seed + 1).items():
                 self.dchecked[b] += r[1]
         print(f"debt drafts in {time.time() - t0:.0f}s", flush=True)
+
+    def draft_stocks(self, loaded, t0):
+        """The lot layer (stock.py), same recipe as the debt layer, only for shops that record lots and expiry dates."""
+        a, eng = self.a, self.engine
+        sdraft = [b for b in loaded if b not in self.sfixed and stock.has_lots(loaded[b][1])]
+        if not getattr(a, "stock_views", False) or not sdraft:
+            return
+        sround = lambda shops, seed: debts.draft(lambda cs, sp, th: eng.chat(cs, sp, thinking=th), eng.SamplingParams, {b: loaded[b] for b in shops}, self.rulebook,
+                                                 schema_text, k=a.k, think=a.view_think, temperature=0.6, seed=seed, system=stock.STOCK_SYSTEM, check_fn=stock.check)
+        self.schecked = {b: r[1] for b, r in sround(sdraft, a.seed).items()}
+        if weak := [b for b in sdraft if 2 * top_votes(self.schecked[b]) < a.k]:
+            for b, r in sround(weak, a.seed + 1).items():
+                self.schecked[b] += r[1]
+        print(f"lot drafts for {len(sdraft)} shop(s) in {time.time() - t0:.0f}s", flush=True)
+
+    def setup_stock(self, b, db):
+        """Pick and build the shop's lot layer (or reuse a saved one), write its log. Returns the prompt part ('' = no layer)."""
+        a, sfixed, schecked = self.a, self.sfixed, self.schecked
+        if b not in sfixed and b not in schecked:
+            return ""
+        sqls, sn = (sfixed[b]["sqls"], sfixed[b]["agree"]) if b in sfixed else debts.pick(schecked[b])
+        sfps = sfixed[b].get("checked", []) if b in sfixed else [str(fp) for fp, _ in schecked[b]]
+        sk = sfixed[b].get("k", a.k) if b in sfixed else len(schecked[b])
+        text = ""
+        if sqls and (sfixed[b]["used"] if b in sfixed else debts.accept(sfps, sn, a.k)):
+            try:
+                stock.build(db, sqls)
+                text = stock.describe(sn, sk)
+            except ValueError as e:
+                print(f"[stock] {b}: layer rejected: {str(e)[:200]}", flush=True)
+        if a.output:
+            (a.output / "logs" / f"_stock_{b}.json").write_text(json.dumps({"agree": sn, "k": sk, "used": bool(text), "sqls": sqls, "checked": sfps,
+                                                                          "errors": [e for fp, e in schecked.get(b, []) if fp is None]}, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"[stock] {b}: {sn}/{sk} agree, used={bool(text)}", flush=True)
+        return text
 
     def setup_shop(self, b, db, meta):
         """Pick and build the shop's views and debt layer, write their logs, and compose the shop part of the prompt."""
@@ -201,8 +240,10 @@ class Pipeline:
         if a.hide_raw and view:  # the views become the interface. The mapping SQL would only point back at the raw tables
             shown, raw_note = views.hide_raw(db, meta, sql)
             view = view.split("\nBuilt from the raw tables")[0]
-        ctx = "README:\n" + meta["readme"] + "\n\nSCHEMA:\n" + schema_text(shown) + raw_note + ("\n\nCANONICAL VIEWS:\n" + view if view else "") + ("\n\n" + debt if debt else "")
-        return Shop(b, db, meta, shown, view, debt, ctx, vinfo)
+        lots = self.setup_stock(b, db) if getattr(a, "stock_views", False) else ""
+        ctx = ("README:\n" + meta["readme"] + "\n\nSCHEMA:\n" + schema_text(shown) + raw_note + ("\n\nCANONICAL VIEWS:\n" + view if view else "")
+               + ("\n\n" + debt if debt else "") + ("\n\n" + lots if lots else ""))
+        return Shop(b, db, meta, shown, view, debt, lots, ctx, vinfo)
 
     def build_chats(self, shop, todo):
         """Per question: values matching it, its hints, whether its period lies outside the data. Then one chat per prompt."""
@@ -210,6 +251,8 @@ class Pipeline:
         for q in todo:
             q["_hits"] = entity_hits(shop.db, shop.shown, q["question"])
             q["_periods"] = question_hints(q["question"], q["as_of_date"], shop.db, shop.shown)
+            if shop.stock:  # the lot macro replaces the hint telling the samples how to compute lot stock from the raw tables
+                q["_periods"] = [p for p in q["_periods"] if not p.startswith("LOT STOCK")]
             q["_oor"] = outside(q["_periods"], data_span(shop.meta))
         # examples read the canonical views, so a shop without them gets none
         return [[chat(s, shop.ctx, q, fewshot.block(bank.retrieve(q["question"], shop.name, a.fewshot_k, debt=bool(shop.debt))) if bank and shop.view and j == 1 else "")
@@ -345,6 +388,7 @@ class Pipeline:
         self.reuse_layers(loaded)
         self.draft_views(loaded, t0)
         self.draft_debts(loaded, t0)
+        self.draft_stocks(loaded, t0)
         results, n_repair, failed = {}, 0, []
         tr = (a.output / "trace.jsonl").open("w", encoding="utf-8")
         for b, (db, meta) in loaded.items():  # one shop at a time: answer all its questions, write results (checkpoint), close
@@ -385,7 +429,8 @@ class Pipeline:
         # drafts made before the loop are shared preparation, like loading the model.
         elapsed_ms = int(round((t_ans - tb) * 1000))
         per_q = (t_ans - tb) / max(1, len(todo))
-        layers = {"views": str(a.output / "logs" / f"_views_{b}.json"), **({"debt": str(a.output / "logs" / f"_debt_{b}.json")} if a.debt_views else {})}
+        layers = {"views": str(a.output / "logs" / f"_views_{b}.json"), **({"debt": str(a.output / "logs" / f"_debt_{b}.json")} if a.debt_views else {}),
+                  **({"stock": str(a.output / "logs" / f"_stock_{b}.json")} if getattr(a, "stock_views", False) else {})}
         for n, (q, (r, ans, conf), ts, ps, es, cs, pool) in enumerate(zip(todo, decisions, texts, preds, errs, chats, pools)):
             results[q["id"]] = r
             rec = {"id": q["id"], "business_id": b, "question": q["question"], "final": r, "vote": ans, "conf": conf,

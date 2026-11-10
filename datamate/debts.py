@@ -119,10 +119,12 @@ def check(db, texts):
     return out
 
 
-def draft(chat, sampling, shops, rulebook, schema_text, k=8, think=6144, temperature=0.6, seed=0, repairs=2):
+def draft(chat, sampling, shops, rulebook, schema_text, k=8, think=6144, temperature=0.6, seed=0, repairs=2, system=None, check_fn=None):
     """Thinking drafts per shop, all shops in one batch, then greedy repair turns with the failed test, as for the views: without thinking the model guessed
-    column names and a single repair turn did not recover them. chat(conversations, params, enable_thinking) -> outputs. Sampling is SamplingParams. Shops is {shop: (db, meta)}. Returns {shop: (texts, checked)}."""
-    chats = {b: [{"role": "system", "content": DEBT_SYSTEM + "\n\nRULEBOOK:\n" + rulebook},
+    column names and a single repair turn did not recover them. chat(conversations, params, enable_thinking) -> outputs. Sampling is SamplingParams. Shops is {shop: (db, meta)}. Returns {shop: (texts, checked)}.
+    system / check_fn: another two-SELECT layer with the same recipe (stock.py); default the debt layer."""
+    system, check = system or DEBT_SYSTEM, check_fn or globals()["check"]
+    chats = {b: [{"role": "system", "content": system + "\n\nRULEBOOK:\n" + rulebook},
                  {"role": "user", "content": "README:\n" + m["readme"] + "\n\nSCHEMA:\n" + schema_text(m)}] for b, (_, m) in shops.items()}
     outs = chat(list(chats.values()), sampling(n=k, temperature=temperature, top_p=0.95, top_k=20, max_tokens=think + 2048, seed=seed), bool(think))
     texts = {b: [x.text for x in o.outputs] for b, o in zip(chats, outs)}
