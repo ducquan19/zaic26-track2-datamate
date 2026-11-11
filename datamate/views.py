@@ -81,16 +81,21 @@ def build(db, sql, prefix="v_"):
     db.execute(f"""CREATE OR REPLACE TABLE {prefix}sales_all AS
         WITH src AS ({sql}), t0 AS (SELECT {COLS} FROM src),
         -- rulebook: one customer = one customer code, else one name up to spelling (case, accents, spaces, punctuation)
-        t1 AS (SELECT * REPLACE (coalesce(customer_id, nullif(regexp_replace(replace(strip_accents(lower(customer_name)), 'đ', 'd'), '[^a-z0-9]', '', 'g'), '')) AS customer_id) FROM t0),
-        t AS (SELECT * EXCLUDE (customer_id, customer_name), customer_id AS customer_key,
-              CASE WHEN customer_id IS NOT NULL THEN mode(customer_name) OVER (PARTITION BY customer_id) END AS customer_name FROM t1)
+        -- the code is folded the same way as a name: a code keeps its letters and digits, a name a draft put in customer_id (public dev_014:
+        -- 'Triệu Linh An 0327988481' / '... - 0327 988 481') becomes one customer, 2605 -> 988; the other 13 public shops keep their counts
+        t1 AS (SELECT * REPLACE (coalesce(nullif(regexp_replace(replace(strip_accents(lower(customer_id)), 'đ', 'd'), '[^a-z0-9]', '', 'g'), ''),
+                                          nullif(regexp_replace(replace(strip_accents(lower(customer_name)), 'đ', 'd'), '[^a-z0-9]', '', 'g'), '')) AS customer_id) FROM t0),
+        -- the key's commonest spelling, ties by the spelling itself: mode() picks among ties at random, so one view gave other names on every build
+        t2 AS (SELECT *, count(*) OVER (PARTITION BY customer_id, customer_name) AS _n FROM t1),
+        t AS (SELECT * EXCLUDE (customer_id, customer_name, _n), customer_id AS customer_key,
+              CASE WHEN customer_id IS NOT NULL THEN first_value(customer_name) OVER (PARTITION BY customer_id ORDER BY customer_name IS NULL, _n DESC, customer_name) END AS customer_name FROM t2)
         SELECT *, bool_or(line_cancelled) OVER w AS is_cancelled, bool_or(line_returned) OVER w AS is_returned,
                NOT bool_or(line_cancelled OR line_returned) OVER w AS is_valid
         FROM t WINDOW w AS (PARTITION BY order_id)""")
     db.execute(f"CREATE OR REPLACE TABLE {prefix}sales AS SELECT * FROM {prefix}sales_all WHERE is_valid AND {REV}")
     db.execute(f"""CREATE OR REPLACE TABLE {prefix}orders_all AS SELECT order_id, min(order_date) AS order_date, min(order_ts) AS order_ts,
         bool_or(is_cancelled) AS is_cancelled, bool_or(is_returned) AS is_returned, bool_and(is_valid) AS is_valid,
-        any_value(customer_key) AS customer_key, any_value(customer_name) AS customer_name, any_value(staff) AS staff, any_value(channel) AS channel, any_value(payment) AS payment,
+        min(customer_key) AS customer_key, arg_min(customer_name, customer_key) AS customer_name, min(staff) AS staff, min(channel) AS channel, min(payment) AS payment,
         coalesce(sum(amount) FILTER (WHERE {REV}), 0) AS revenue, count(*) FILTER (WHERE {REV}) AS n_lines
         FROM {prefix}sales_all GROUP BY order_id""")
     db.execute(f"CREATE OR REPLACE TABLE {prefix}orders AS SELECT * FROM {prefix}orders_all WHERE is_valid")
@@ -210,8 +215,19 @@ def split_test(db, prefix):
                          "Multiply by a unit's factor only the lines recorded in that unit (match the conversion table on the item AND on the line's unit), times 1 for lines already in the base unit")
 
 
+def customer_test(db, prefix):
+    """Drafting only: the lines of one order name one customer. A saved layer that fails it is still used (--views-from)."""
+    split, with_cust = db.execute(f"""SELECT count(*) FILTER (WHERE n > 1), count(*) FROM (SELECT count(DISTINCT customer_key) AS n FROM {prefix}sales_all
+        WHERE customer_key IS NOT NULL GROUP BY order_id)""").fetchone()
+    if with_cust and split > 0.02 * with_cust:  # public views: 0.0% on 13 shops; dev_014's draft 36% (names put in customer_id, each spelling its own customer)
+        raise ValueError(f"{split} of {with_cust} orders ({split / with_cust:.0%}) carry several customer_key values on their lines. Either customer_id holds the customer "
+                         "NAME, written several ways (a name goes in customer_name; customer_id only holds a customer code / card id column, else NULL), "
+                         "or order_id merges different orders")
+
+
 def tests(db, prefix, sql):
     catalog_test(db, prefix)
+    customer_test(db, prefix)
     time_test(db, prefix, sql)
     split_test(db, prefix)
     qty_test(db, prefix)

@@ -186,16 +186,27 @@ def union_key(name):
     return re.sub(r"_+", "_", re.sub(r"(?:^|_)(?:t|thang|nam)?_?(?:0?[1-9]|1[0-2])?_?20\d{2}(?=_|$)|(?:^|_)(?:t|thang)_?(?:0?[1-9]|1[0-2])(?=_|$)", "_", name)).strip("_") or name
 
 
+def unmangle(name):
+    """A file name whose UTF-8 bytes were read as cp437 by the unzip tool ('Danh s├ích' for 'Danh sách') gets its real name back,
+    so table names (and the saved views that read them) are the same whichever tool unpacked the data. Other names are kept."""
+    try:
+        fixed = name.encode("cp437").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return name
+    return unicodedata.normalize("NFC", fixed) if fixed != name else name
+
+
 def read_rows(f):
     """Yield (table_name, rows) for every sheet/table in a file."""
     ext = f.suffix.lower()
+    stem = unmangle(f.stem)
     if ext == ".xlsx":
         from python_calamine import CalamineWorkbook
         book = CalamineWorkbook.from_path(str(f))
         try:
             for sheet in book.sheet_names:
                 rows = book.get_sheet_by_name(sheet).to_python(skip_empty_area=False)
-                yield f"{f.stem}_{sheet}" if len(book.sheet_names) > 1 else f.stem, sheet, rows
+                yield f"{stem}_{sheet}" if len(book.sheet_names) > 1 else stem, sheet, rows
         finally:
             book.close()
     elif ext == ".csv":
@@ -207,7 +218,7 @@ def read_rows(f):
             dialect = csv.Sniffer().sniff(text[:16384], delimiters=",;\t|")
         except csv.Error:
             dialect = csv.excel
-        yield f.stem, None, list(csv.reader(text.splitlines(), dialect))
+        yield stem, None, list(csv.reader(text.splitlines(), dialect))
     elif ext in (".db", ".sqlite", ".sqlite3"):
         with sqlite3.connect(f"file:{f.resolve()}?mode=ro", uri=True) as src:
             for (table,) in src.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
@@ -240,7 +251,9 @@ def spelling_map(counts):
     names are one customer, one item). Forms with different accents stay apart (Bò, Bơ). A form without accents joins only
     when one accented form shares its key, since otherwise it could be either."""
     groups = defaultdict(list)
-    for v, n in counts.items():
+    # sorted, so ties in best() and the order of the forms do not depend on the order DuckDB returned the groups or on the hash
+    # seed (public dev_014: 2276-2301 customers over three loads of the same files)
+    for v, n in sorted(counts.items(), key=lambda x: (str(x[0]), x[1])):
         k = spelling_key(v)
         if k and len(k) <= 80 and any(c.isalpha() for c in k):
             groups[k].append((v, n))
@@ -305,7 +318,7 @@ def load_business(root, business, canon=False):
             rows = [r for r in rows if any(v is not None and str(v).strip() for v in r)]
             if len(rows) < 2:
                 continue
-            year = re.search(r"20\d{2}", str(sheet or "")) or re.search(r"20\d{2}", f.stem)
+            year = re.search(r"20\d{2}", str(sheet or "")) or re.search(r"20\d{2}", unmangle(f.stem))
             df = prepare(fix_header(rows), int(year.group()) if year else None)
             if df.empty:
                 continue
@@ -318,7 +331,7 @@ def load_business(root, business, canon=False):
             db.register("_src", df)
             db.execute(f"CREATE TABLE {quote(name)} AS SELECT * FROM _src")
             db.unregister("_src")
-            tables[name] = f.name + (f"#{sheet}" if sheet else "")
+            tables[name] = unmangle(f.name) + (f"#{sheet}" if sheet else "")
     if not tables:
         raise ValueError(f"No usable tables: {folder}")
     if canon:
