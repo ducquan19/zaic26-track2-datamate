@@ -46,6 +46,7 @@ def parse_args(argv=None):
     p.add_argument("--fuzzy-hits", action="store_true", help="VALUES MATCHING THE QUESTION also lists names written with typos, initials, chat shorthand or a form of address + given name (ingest.fuzzy_hits)")
     p.add_argument("--fewshot-by", choices=["text", "shape", "hybrid"], default="text", help="few-shot retrieval: word/trigram similarity, question shape (fewshot.SHAPES), or both")
     p.add_argument("--value-lookup", action="store_true", help="a repair turn after an empty result names the filter literals that are no value of the data and the closest values (lookup.py)")
+    p.add_argument("--selector", type=Path, help="learned answer selector (analysis/train_selector.py output): replaces the vote and --threshold")
     p.add_argument("--vote-weights", type=json.loads, default={}, help='vote weight per sample kind, e.g. {"repair": 0.5, "thinking": 1.5, "raw": 0.75} (analysis/vote_weights_cv.py fits them)')
     p.add_argument("--save-prompts", action="store_true", help="keep each question's user message in the trace (SFT data from train runs)")
     p.add_argument("--shard", default="0/1", help="i/n: run the i-th of n business shards (one process per GPU)")

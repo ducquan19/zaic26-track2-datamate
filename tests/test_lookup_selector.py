@@ -1,7 +1,10 @@
-"""Value lookup for the repair turn."""
+"""Value lookup for the repair turn, and the learned answer selector."""
+import json
+
 import duckdb
 
 from datamate.lookup import literals, lookup_hint
+from datamate.selector import FEATURES, Selector, groups
 
 N = lambda v: {"type": "number", "answer": v}
 PLAIN = "TYPE: number\n```sql\nSELECT SUM(amount) FROM v_sales\n```"
@@ -31,3 +34,14 @@ def test_lookup_names_the_closest_values():
     assert lookup_hint(db, "SELECT 1 FROM ban WHERE strip_accents(lower(mon)) LIKE '%ca phe%'") == ""       # a LIKE that matches
     assert lookup_hint(db, "SELECT 1 FROM ban WHERE mon = 'Sinh tố bơ'") == ""                              # nothing close: no hint
 
+
+def test_selector_groups_and_choice(tmp_path):
+    texts = [PLAIN] * 4 + [PLAIN + "\n#REPAIR\n" + PLAIN] * 2 + ["<think>x</think>" + PLAIN] * 2
+    preds = [N(5), N(5), N(7), N(7), N(7), N(7), N(5), N(5)]
+    gs = groups(preds, texts, list(range(8)), 6, 3)
+    assert [a["answer"] for a, _ in gs] == [5, 7] and set(gs[0][1]) == set(FEATURES)
+    assert gs[0][1]["think_share"] == 0.5 and gs[1][1]["repair_share"] == 0.5 and gs[0][1]["top"] == gs[1][1]["top"] == 1.0
+    w = {k: 0.0 for k in FEATURES} | {"think_share": 4.0, "repair_share": -4.0}
+    (tmp_path / "s.json").write_text(json.dumps({"weights": w, "threshold": 0.6}))
+    ans, p = Selector(tmp_path / "s.json").choose(preds, texts, list(range(8)), 6, 3)
+    assert ans == N(5) and p > 0.6   # the plain vote ties 4-4; the thinking samples carry 5

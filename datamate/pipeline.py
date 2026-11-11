@@ -21,6 +21,7 @@ from . import debts, fewshot, stock, views, voting
 from .hints import DEBT_WORDS, data_span, outside, question_hints
 from .ingest import entity_hits, load_business, norm, profile, schema_text
 from .lookup import lookup_hint
+from .selector import Selector
 from .prompts import NOTES, SYSTEM, SYSTEM_ALT, chat, repair_hint
 from .sqlexec import execute, parse
 from .submission import merge_shards, write_submission
@@ -72,6 +73,7 @@ class Pipeline:
         self.dchecked, self.dfixed = {}, {}
         self.schecked, self.sfixed = {}, {}
         self.vote_weights = getattr(a, "vote_weights", None) or {}  # {} = every sample one vote (the submitted setup)
+        self.selector = Selector(a.selector) if getattr(a, "selector", None) else None  # learned answer selector (selector.py)
         # one log record per question: --log-dir (Docker: /result/logs), else the run's own logs/
         self.log_dir = getattr(a, "log_dir", None) or (a.output / "logs" if getattr(a, "output", None) else None)
         self._calls, self._runs = [], []
@@ -383,6 +385,10 @@ class Pipeline:
         out = []
         for n, (q, ps, pool) in enumerate(zip(todo, preds, pools)):
             voters = [ps[j] for j in pool]
+            if self.selector and texts:  # the group the model scores best, answered at its fitted probability threshold
+                ans, conf = self.selector.choose(ps, texts[n], pool, 2 * self.half, self.half)
+                out.append((final_answer(ans, conf, self.selector.threshold, q["_oor"], self.a.answer_unanswerable), ans, conf))
+                continue
             w = voting.sample_weights([texts[n][j] for j in pool], 2 * self.half, self.vote_weights, pool) if self.vote_weights and texts else None
             ans, conf = vote(voters, len(voters), weights=w)
             out.append((final_answer(ans, conf, self.a.threshold, q["_oor"], self.a.answer_unanswerable), ans, conf))
