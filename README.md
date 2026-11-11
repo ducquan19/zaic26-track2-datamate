@@ -147,6 +147,7 @@ Các flag thử nghiệm, **tắt mặc định** (bản đã nộp không dùng
 | `--stock-views`          | lớp lô do LLM soạn cho shop có cột lô và hạn dùng (`datamate/stock.py`), macro `lot_stock_at(ngày)`: tồn từng lô, giá trị theo giá nhập của chính lô |
 | `--fuzzy-hits`           | VALUES MATCHING THE QUESTION thêm tên viết sai chính tả hoặc tắt (`cf`), chữ cái đầu (`cpsd`), xưng hô + tên (`chị Lan`) (`ingest.fuzzy_hits`) |
 | `--fewshot-by hybrid`    | ví dụ few-shot chọn theo dạng câu (xếp hạng, so sánh kỳ, tỉ lệ, nợ…, `fewshot.SHAPES`) cùng độ giống chữ; `shape` chỉ theo dạng câu        |
+| `--value-lookup`         | lượt sửa sau một kết quả rỗng nêu các giá trị lọc không có trong dữ liệu và các giá trị gần nhất (`datamate/lookup.py`)                    |
 | `--vote-weights JSON`    | bỏ phiếu có trọng số theo loại mẫu, ví dụ `'{"repair": 0.5, "thinking": 1.5}'`; trọng số học bằng `analysis/vote_weights_cv.py` trên trace train |
 
 Mỗi shop chạy trong try/except riêng: một shop lỗi (view đã lưu không dựng được, lỗi engine) chỉ làm các câu của shop đó bỏ trống, các shop sau vẫn chạy.

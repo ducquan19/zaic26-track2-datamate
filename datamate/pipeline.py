@@ -20,10 +20,14 @@ from dataclasses import dataclass, field
 from . import debts, fewshot, stock, views, voting
 from .hints import DEBT_WORDS, data_span, outside, question_hints
 from .ingest import entity_hits, load_business, norm, profile, schema_text
+from .lookup import lookup_hint
 from .prompts import NOTES, SYSTEM, SYSTEM_ALT, chat, repair_hint
 from .sqlexec import execute, parse
 from .submission import merge_shards, write_submission
 from .voting import debt_pool, final_answer, top_votes, vote
+
+
+EMPTY = ("expected one cell, got 0 rows", "result is NULL", "a list item is NULL")  # errors of filters that matched nothing
 
 
 def load_questions(a):
@@ -287,7 +291,11 @@ class Pipeline:
                 break
             for i, j in pairs:
                 e = errs[i][j].split(" | ")[-1]
-                conv[i, j].append({"role": "user", "content": f"ERROR: {e}\n{repair_hint(e)}Fix the query. Answer again in the same format."})
+                look = ""
+                if getattr(a, "value_lookup", False) and e.startswith(EMPTY):  # filters matched nothing: name the literals that are no value, and the closest values
+                    ran = [x["sql"] for x in self._runs[i] if x["sample"] == j and x["sql"]]
+                    look = lookup_hint(shop.db, ran[-1]) if ran else ""
+                conv[i, j].append({"role": "user", "content": f"ERROR: {e}\n{look}{repair_hint(e)}Fix the query. Answer again in the same format."})
             routs = eng.chat([conv[ij] for ij in pairs], eng.params(n=1, temperature=0, max_tokens=a.max_tokens), lora=True)
             for (i, j), o in zip(pairs, routs):
                 out = o.outputs[0].text
