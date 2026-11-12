@@ -34,7 +34,9 @@ git pull && git lfs install && git lfs pull                       # code và ada
 .venv-train/bin/pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cu126
 .venv-train/bin/pip install -r training/requirements.txt
 .venv-train/bin/pip install fla-core==0.6.0 --no-deps
-.venv-train/bin/python -c "import torch; print(torch.__version__, torch.version.cuda)"   # phải là 2.14.1+cu126 12.6
+# requirements kéo torchvision mới nhất từ PyPI (bản cho CUDA 13): toán tử của nó không nạp được với torch cu126, unsloth báo lỗi khi import
+.venv-train/bin/pip install --force-reinstall --no-deps --index-url https://download.pytorch.org/whl/cu126 "torchvision==0.29.1"
+.venv-train/bin/python -c "import torch, torchvision; print(torch.__version__, torch.version.cuda, torchvision.__version__)"   # phải là 2.14.1+cu126 12.6 0.29.1+cu126
 
 export HF_HOME=/media02/lhbac34/hf
 .venv-train/bin/hf download Qwen/Qwen3.5-9B --revision c202236235762e1c871ad0ccb60c8ee5ba337b9a --local-dir models/Qwen3.5-9B
