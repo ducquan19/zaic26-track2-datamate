@@ -9,6 +9,7 @@ Viết cho cluster của đội; cluster khác thì sửa các dòng `#SBATCH` t
 | Driver | 555.42.02 (CUDA ≤ 12.5) | `torch` mặc định trên PyPI là bản CUDA 13 (cần driver ≥ 580): cài bản `+cu126` |
 | Python | hệ thống chỉ có 3.10; `trl` cần ≥ 3.11 | dùng CPython 3.12 dựng sẵn, giải nén vào thư mục của bạn |
 | Thời gian | tối đa 2 ngày một job, requeue được bật | job 12 h, tự requeue khi sắp hết giờ |
+| Bộ nhớ, đĩa | tối đa 32 GB RAM một job; `/media02` dùng chung và gần đầy | `--mem=32G`; giữ model và checkpoint càng nhỏ càng tốt |
 
 Một vòng train cần 1 GPU bf16 từ 24 GB. LoRA v3 cần tối đa 15,6 GiB và mất 8,2 h trên RTX PRO 4000 Blackwell (chưa đo trên A100).
 
