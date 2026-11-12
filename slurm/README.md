@@ -81,6 +81,61 @@ Script nhận tín hiệu `USR1` 10 phút trước khi hết giờ, rồi tự x
 - `check_fla.py` in `fla check FAIL`: dừng lại, đừng train. Thường do phiên bản torch, triton hoặc fla-core không khớp.
 - Job chạy trên V100 (log in `Tesla V100`): thiếu `--exclude=gpu04`.
 - Hết bộ nhớ (OOM): giảm `MAX_LEN`. Mỗi dòng SFT dài 9k đến 19k token, nên dưới khoảng 16k thì phần lớn dữ liệu bị bỏ.
-- Tạo lại dữ liệu SFT (chạy `datamate.predict` trên train rồi `add_notes.py`) cần vLLM 0.32 và fp8 (`scripts/flags.sh`).
-  Cluster này không hợp cho bước đó: A100 không có fp8 phần cứng và driver 555 cũ hơn bản CUDA của vLLM. Nên chạy bước đó trên máy đã
-  dùng cho bản nộp, rồi chép file SFT sang đây để train.
+- Tạo lại dữ liệu SFT (chạy `datamate.predict` trên train với `--save-prompts`, rồi `build_sft.py` và `add_notes.py`) cần vLLM:
+  dùng môi trường vLLM `+cu129` của mục 5 (`slurm/predict.sbatch` với `SPLIT=train IDS=splits/rft_train24.txt`). `add_notes.py`
+  chạy trên A100 với `--quant fp8` như mục 5; nếu lỗi thì `--quant none` (bf16, cần nhiều bộ nhớ GPU hơn).
+
+## 5. Inference (chạy pipeline và chấm điểm) trên cluster
+
+vLLM 0.32.0 của bản nộp có bản build cho CUDA 12.9 (`+cu129`, đi cùng `torch 2.13.0+cu129`), chạy trên driver 555 (CUDA 12.5)
+nhờ tương thích phiên bản phụ của CUDA 12: wheel có sẵn mã máy cho A100 (sm_80), Triton biên dịch kernel ra mã máy, nên driver
+không phải dịch PTX. `scripts/flags.sh` đã chọn backend attention Triton và tắt sampler FlashInfer. Trên A100 (không có fp8
+phần cứng), `--quant fp8` chạy theo kiểu chỉ lượng tử hoá trọng số (Marlin).
+
+`/media02` gần đầy: môi trường vLLM (khoảng 10 GB) và model bf16 (19,3 GB, inference cần bản bf16, không dùng bản 4-bit của
+bước train) đặt ở `/media/lhbac34`.
+
+```bash
+# một lần, trên login node
+source /media02/lhbac34/datamate.env
+mkdir -p /media/lhbac34/envs /media/lhbac34/models
+/media02/lhbac34/opt/python3.12/bin/python3.12 -m venv /media/lhbac34/envs/datamate-vllm
+V=/media/lhbac34/envs/datamate-vllm/bin
+$V/pip install --upgrade pip
+$V/pip install torch==2.13.0 torchvision==0.28.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu129
+$V/pip install "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
+    --extra-index-url https://download.pytorch.org/whl/cu129
+cd /media02/lhbac34/datamate && $V/pip install -e .          # datamate (vllm đã có, không cài lại)
+$V/python -c "import torch, vllm; print(torch.__version__, torch.version.cuda, vllm.__version__)"   # 2.13.0+cu129 12.9 0.32.0+cu129
+$V/pip cache purge
+HF_HUB_DISABLE_XET=1 $V/hf download Qwen/Qwen3.5-9B --revision c202236235762e1c871ad0ccb60c8ee5ba337b9a \
+    --local-dir /media/lhbac34/models/Qwen3.5-9B
+```
+
+Chạy (từ thư mục gốc repo; `logs/` phải có trước khi `sbatch`, vì Slurm mở file log trước khi script chạy):
+
+```bash
+cd /media02/lhbac34/datamate && source /media02/lhbac34/datamate.env && mkdir -p logs
+export PYTHON=/media/lhbac34/envs/datamate-vllm/bin/python MODEL_DIR=/media/lhbac34/models/Qwen3.5-9B
+
+# thử 20 câu public: GPU, driver, vLLM, LoRA, fp8 trên A100
+sbatch --array=0 --time=01:00:00 --export=ALL,EXTRA="--limit 20",OUT=runs/smoke slurm/predict.sbatch
+tail -f logs/datamate-<jobid>_0.out
+
+# public test, 4 shard (QOS cho tối đa 4 GPU), rồi gộp file nộp
+sbatch slurm/predict.sbatch
+$PYTHON -m datamate.submission merge runs/public --questions data/public_test/questions.jsonl
+
+# holdout của train, có chấm điểm
+sbatch --export=ALL,SPLIT=train,IDS=splits/holdout600.txt,OUT=runs/holdout slurm/predict.sbatch
+$PYTHON -m datamate.submission merge runs/holdout --questions data/train/questions.jsonl
+grep -F -f splits/holdout600.txt data/train/questions.jsonl > runs/holdout/questions.jsonl
+$PYTHON -m datamate.scoring --data data/train --pred runs/holdout/submission.jsonl --questions runs/holdout/questions.jsonl --output runs/holdout/score.json
+```
+
+Thêm cải tiến thử nghiệm bằng `EXTRA`, ví dụ `--export=ALL,OUT=runs/public_lots,EXTRA="--stock-views --value-lookup"`.
+Lỗi hay gặp:
+- `CUDA driver version is insufficient`: torch không phải bản `+cu129`, cài lại torch như trên.
+- Lỗi khi dùng KV cache fp8 trên A100: chạy với `ENGINE='{"max_num_seqs":128,"max_num_batched_tokens":8192,"attention_backend":"TRITON_ATTN"}'`
+  (bỏ `kv_cache_dtype`), export trước khi `sbatch`.
+- Hết bộ nhớ GPU: giảm `max_num_seqs` trong `ENGINE`, hoặc `GPU_MEM=0.85`.
