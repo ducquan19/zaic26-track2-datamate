@@ -14,7 +14,7 @@
 # (bf16 base, default models/Qwen3.5-9B), LORA_DIR (default adapters/sql_rft_v3), SPLIT, IDS, OUT, FRESH, EXTRA (more
 # predict flags, e.g. "--stock-views --value-lookup"), ENGINE / QUANT / GPU_MEM (scripts/flags.sh).
 # vLLM 0.32.0+cu129 runs on the cluster's 555 driver (CUDA 12.5) through CUDA 12 minor-version compatibility.
-#SBATCH --job-name=datamate
+#SBATCH --job-name=datama
 #SBATCH --partition=batch
 #SBATCH --account=compute-account
 #SBATCH --exclude=gpu04
