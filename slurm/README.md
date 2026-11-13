@@ -105,6 +105,8 @@ $V/pip install --upgrade pip
 $V/pip install torch==2.13.0 torchvision==0.28.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu129
 $V/pip install "vllm @ https://github.com/vllm-project/vllm/releases/download/v0.32.0/vllm-0.32.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl" \
     --extra-index-url https://download.pytorch.org/whl/cu129
+# vLLM kéo torchcodec mới nhất từ PyPI (bản CUDA 13): libtorchcodec_image.so không nạp được, `import vllm` lỗi. Thay bằng bản cu129
+$V/pip install --force-reinstall --no-deps --index-url https://download.pytorch.org/whl/cu129 "torchcodec==0.16.0"
 cd /media02/lhbac34/datamate && $V/pip install -e .          # datamate (vllm đã có, không cài lại)
 $V/python -c "import torch, vllm; print(torch.__version__, torch.version.cuda, vllm.__version__)"   # 2.13.0+cu129 12.9 0.32.0+cu129
 $V/pip cache purge
@@ -135,6 +137,11 @@ $PYTHON -m datamate.scoring --data data/train --pred runs/holdout/submission.jso
 
 Thêm cải tiến thử nghiệm bằng `EXTRA`, ví dụ `--export=ALL,OUT=runs/public_lots,EXTRA="--stock-views --value-lookup"`.
 Lỗi hay gặp:
+- `PYTHON` và `MODEL_DIR` phải được export trước `sbatch` (nên ghi vào `datamate.env`); thiếu thì job lỗi ngay với
+  `.venv/bin/python: No such file or directory` (mã 127).
+- `Permission denied: '/home/lhbac34/.triton'`: compute node không ghi được `/home`. `predict.sbatch` đặt mọi cache (Triton, vLLM,
+  torch.compile) dưới `CACHE_ROOT` (mặc định `/media/$USER/cache`).
+- `OSError: Could not load this library: .../libtorchcodec_image.so`: torchcodec là bản CUDA 13, cài lại bản cu129 như trên.
 - `CUDA driver version is insufficient`: torch không phải bản `+cu129`, cài lại torch như trên.
 - Lỗi khi dùng KV cache fp8 trên A100: chạy với `ENGINE='{"max_num_seqs":128,"max_num_batched_tokens":8192,"attention_backend":"TRITON_ATTN"}'`
   (bỏ `kv_cache_dtype`), export trước khi `sbatch`.

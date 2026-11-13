@@ -41,6 +41,13 @@ IDS_ARG=()
 [ -n "${IDS:-}" ] && IDS_ARG=(--ids "$IDS")
 mkdir -p "$OUT" logs
 
+# Compute nodes cannot write $HOME (Triton, vLLM and torch.compile cache there by default): keep every cache under CACHE_ROOT,
+# shared by the shards so the compiled kernels are reused by later runs.
+CACHE_ROOT=${CACHE_ROOT:-/media/$USER/cache}
+export TRITON_HOME="$CACHE_ROOT" TRITON_CACHE_DIR="$CACHE_ROOT/triton" VLLM_CACHE_ROOT="$CACHE_ROOT/vllm" \
+  XDG_CACHE_HOME="$CACHE_ROOT/xdg" TORCHINDUCTOR_CACHE_DIR="$CACHE_ROOT/inductor" HF_HUB_OFFLINE=1
+mkdir -p "$CACHE_ROOT"
+
 echo "== shard $I/$N of $SPLIT -> $OUT  job ${SLURM_JOB_ID:-local}  host $(hostname)  start $(date)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
 "$PY" -c "import torch, vllm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available(), '| vllm', vllm.__version__)"

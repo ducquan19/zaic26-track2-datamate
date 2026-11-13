@@ -32,6 +32,9 @@ EXTRA=${EXTRA:-}
 
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 export TRITON_CACHE_DIR="${TMPDIR:-/tmp}/triton-${SLURM_JOB_ID:-local}"
+# compute nodes cannot write $HOME: Triton, torch.compile and other caches go to the node's temporary directory
+export TRITON_HOME="$TRITON_CACHE_DIR" XDG_CACHE_HOME="${TMPDIR:-/tmp}/cache-${SLURM_JOB_ID:-local}" \
+    TORCHINDUCTOR_CACHE_DIR="${TMPDIR:-/tmp}/inductor-${SLURM_JOB_ID:-local}"
 mkdir -p logs "$OUT"
 
 # Near the time limit: put the job back in the queue. The next start continues from the newest checkpoint (--resume).
