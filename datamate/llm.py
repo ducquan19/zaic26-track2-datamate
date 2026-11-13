@@ -10,7 +10,7 @@ class Engine:
         self.SamplingParams = SamplingParams
         self.llm = LLM(model=model, tensor_parallel_size=tp, gpu_memory_utilization=gpu_mem, max_model_len=context,
                        enable_prefix_caching=True, disable_log_stats=False, seed=seed, language_model_only=True,
-                       **({"quantization": quant} if quant else {}),
+                       **({"quantization": quant} if quant and quant.lower() != "none" else {}),  # --quant none: bf16
                        **({"enable_lora": True, "max_lora_rank": 64, "max_loras": 1} if lora else {}), **(engine_kwargs or {}))
         self.lora = LoRARequest("sql", 1, str(lora)) if lora else None
         self.tokenizer = self.llm.get_tokenizer()
