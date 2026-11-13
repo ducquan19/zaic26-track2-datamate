@@ -13,11 +13,12 @@
 # Environment (export before sbatch, or in --export): PYTHON (the vLLM environment, default .venv/bin/python), MODEL_DIR
 # (bf16 base, default models/Qwen3.5-9B), LORA_DIR (default adapters/sql_rft_v3), SPLIT, IDS, OUT, FRESH, EXTRA (more
 # predict flags, e.g. "--stock-views --value-lookup"), ENGINE / QUANT / GPU_MEM (scripts/flags.sh).
-# vLLM 0.32.0+cu129 runs on the cluster's 555 driver (CUDA 12.5) through CUDA 12 minor-version compatibility.
+# vLLM 0.32.0+cu129 needs a recent enough driver: gpu03 (580) runs it, gpu01 (525, CUDA 12.0) fails at the first CUDA call
+# ("named symbol not found"), gpu04 holds V100s. Both are excluded; see slurm/README.md for each node's driver.
 #SBATCH --job-name=datama
 #SBATCH --partition=batch
 #SBATCH --account=compute-account
-#SBATCH --exclude=gpu04
+#SBATCH --exclude=gpu01,gpu04
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G

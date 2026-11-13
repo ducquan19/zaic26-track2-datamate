@@ -5,8 +5,8 @@ Viết cho cluster của đội; cluster khác thì sửa các dòng `#SBATCH` t
 | | Cluster của đội | Ảnh hưởng |
 | --- | --- | --- |
 | Partition, account | `batch`, `compute-account`, QOS `gpu_limit` (tối đa 4 GPU cùng lúc mỗi người) | đã điền trong `train_lora.sbatch` |
-| GPU | gpu01 (8×), gpu02-03 (4×) A100 40GB; gpu04 V100 32GB | V100 không có bf16: `--exclude=gpu04` |
-| Driver | 555.42.02 (CUDA ≤ 12.5) | `torch` mặc định trên PyPI là bản CUDA 13 (cần driver ≥ 580): cài bản `+cu126` |
+| GPU | gpu01 (8×), gpu02-03 (4×) A100 40GB; gpu04 V100 32GB | V100 không có bf16: `--exclude=gpu01,gpu04` |
+| Driver | mỗi node một khác: gpu01 525.147 (CUDA 12.0), gpu02 555.42 (12.5), gpu03 580.82 (13.0) | gpu01 quá cũ cho torch cu126/cu129 (`CUDA error: named symbol not found` ngay lệnh CUDA đầu tiên): bị loại. `torch` mặc định trên PyPI là bản CUDA 13: cài bản `+cu126` (train), `+cu129` (vLLM) |
 | Python | hệ thống chỉ có 3.10; `trl` cần ≥ 3.11 | dùng CPython 3.12 dựng sẵn, giải nén vào thư mục của bạn |
 | Thời gian | tối đa 2 ngày một job, requeue được bật | job 12 h, tự requeue khi sắp hết giờ |
 | Bộ nhớ, đĩa | tối đa 32 GB RAM một job; `/media02` dùng chung và gần đầy | `--mem=32G`; giữ model và checkpoint càng nhỏ càng tốt |
@@ -79,7 +79,9 @@ Script nhận tín hiệu `USR1` 10 phút trước khi hết giờ, rồi tự x
 
 - `CUDA driver version is insufficient` hoặc `torch.cuda.is_available()` là False: torch không phải bản `+cu126`, xem mục 1.
 - `check_fla.py` in `fla check FAIL`: dừng lại, đừng train. Thường do phiên bản torch, triton hoặc fla-core không khớp.
-- Job chạy trên V100 (log in `Tesla V100`): thiếu `--exclude=gpu04`.
+- Job chạy trên V100 (log in `Tesla V100`): thiếu `--exclude=gpu01,gpu04`.
+- `CUDA error: named symbol not found` ngay khi khởi tạo: job rơi vào node có driver quá cũ (gpu01, 525). Dòng
+  `nvidia-smi` đầu log in driver; xem `--exclude` ở trên.
 - Hết bộ nhớ (OOM): giảm `MAX_LEN`. Mỗi dòng SFT dài 9k đến 19k token, nên dưới khoảng 16k thì phần lớn dữ liệu bị bỏ.
 - Tạo lại dữ liệu SFT (chạy `datamate.predict` trên train với `--save-prompts`, rồi `build_sft.py` và `add_notes.py`) cần vLLM:
   dùng môi trường vLLM `+cu129` của mục 5 (`slurm/predict.sbatch` với `SPLIT=train IDS=splits/rft_train24.txt`). `add_notes.py`

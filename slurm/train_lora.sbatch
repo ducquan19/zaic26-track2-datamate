@@ -5,11 +5,12 @@
 #   sbatch --export=ALL,EXTRA="--limit-rows 50 --max-steps 5" --time=00:30:00 slurm/train_lora.sbatch   # quick setup check
 # Set for the team's cluster (partition batch, account compute-account, A100-40GB nodes gpu01-03). Another cluster: edit the
 # #SBATCH lines below or override them on the sbatch command line. gpu04 holds V100s, which have no bf16: excluded.
+# gpu01 runs driver 525 (CUDA 12.0), too old for the cu126/cu129 wheels: excluded.
 # Memory: the cluster allows up to 32 GB per job; LoRA v3 was trained on a machine with 30 GB of RAM.
 #SBATCH --job-name=lora
 #SBATCH --partition=batch
 #SBATCH --account=compute-account
-#SBATCH --exclude=gpu04
+#SBATCH --exclude=gpu01,gpu04
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
