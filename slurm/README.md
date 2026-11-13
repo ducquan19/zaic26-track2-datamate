@@ -145,6 +145,7 @@ Lỗi hay gặp:
   torch.compile) dưới `CACHE_ROOT` (mặc định `/media/$USER/cache`).
 - `OSError: Could not load this library: .../libtorchcodec_image.so`: torchcodec là bản CUDA 13, cài lại bản cu129 như trên.
 - `CUDA driver version is insufficient`: torch không phải bản `+cu129`, cài lại torch như trên.
-- Lỗi khi dùng KV cache fp8 trên A100: chạy với `ENGINE='{"max_num_seqs":128,"max_num_batched_tokens":8192,"attention_backend":"TRITON_ATTN"}'`
-  (bỏ `kv_cache_dtype`), export trước khi `sbatch`.
+- `FP8 KV cache is not supported by the Triton attention backend on NVIDIA A100`: KV cache fp8 cần GPU SM 8.9+. `predict.sbatch`
+  tự bỏ `kv_cache_dtype` khi GPU dưới SM 8.9 (dòng `== GPU compute capability 8.0 < 8.9` trong log); trọng số vẫn fp8.
+  Kết quả vì thế có thể khác bản nộp (chạy trên GPU có KV cache fp8) ở một số câu.
 - Hết bộ nhớ GPU: giảm `max_num_seqs` trong `ENGINE`, hoặc `GPU_MEM=0.85`.

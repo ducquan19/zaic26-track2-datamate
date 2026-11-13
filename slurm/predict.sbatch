@@ -27,6 +27,13 @@
 #SBATCH --output=logs/%x-%A_%a.out
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
+# An fp8 KV cache needs SM 8.9+ (the Triton attention backend refuses it on an A100, SM 8.0): below that, keep the submitted
+# engine settings but with the KV cache in the model's dtype. The weights stay fp8 (QUANT). An ENGINE given by the caller wins.
+CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 || true)
+if [ -z "${ENGINE:-}" ] && [ -n "$CAP" ] && awk -v c="$CAP" 'BEGIN { exit !(c < 8.9) }'; then
+  export ENGINE='{"max_num_seqs":128,"max_num_batched_tokens":8192,"attention_backend":"TRITON_ATTN"}'
+  echo "== GPU compute capability $CAP < 8.9: KV cache in bf16 (no fp8 KV cache)"
+fi
 source scripts/flags.sh
 
 PY=${PYTHON:-.venv/bin/python}
