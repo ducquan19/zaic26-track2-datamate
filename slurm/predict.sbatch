@@ -56,6 +56,37 @@ export TRITON_HOME="$CACHE_ROOT" TRITON_CACHE_DIR="$CACHE_ROOT/triton" VLLM_CACH
   XDG_CACHE_HOME="$CACHE_ROOT/xdg" TORCHINDUCTOR_CACHE_DIR="$CACHE_ROOT/inductor" HF_HUB_OFFLINE=1
 mkdir -p "$CACHE_ROOT"
 
+# vLLM reads the safetensors through mmap plus a background prefetch, which made no progress in an hour on the cluster's
+# NFS. Copy the model once per node to its local disk (sequential read) and load it from there; later jobs on the node
+# reuse the copy. STAGE=0 loads straight from MODEL_DIR; STAGE_DIR picks the local directory (default /tmp/$USER-models).
+MODEL=${MODEL_DIR:-models/Qwen3.5-9B}
+if [ "${STAGE:-1}" = 1 ]; then
+  BASE=${STAGE_DIR:-/tmp/$USER-models}
+  LOCAL=$BASE/$(basename "$MODEL")
+  NEED=$(du -sk "$MODEL" | cut -f1)
+  mkdir -p "$BASE"
+  (
+    command -v flock >/dev/null && flock 9   # one copy per node, whatever the number of shards started on it
+    if [ "$(cat "$LOCAL/.staged" 2>/dev/null)" != "$NEED" ]; then
+      FREE=$(df -Pk "$BASE" | awk 'NR==2 {print $4}')
+      if [ "$FREE" -gt $((NEED + 2097152)) ]; then
+        echo "== staging $MODEL -> $LOCAL ($((NEED / 1048576)) GB), $(date +%T)"
+        PART="$LOCAL.part.${SLURM_JOB_ID:-$BASHPID}"   # own temporary copy, renamed in one step: a concurrent job never sees a half copy
+        rm -rf "$PART"; [ -f "$LOCAL/.staged" ] || rm -rf "$LOCAL"
+        if cp -r "$MODEL" "$PART" && echo "$NEED" > "$PART/.staged" && mv -T "$PART" "$LOCAL" 2>/dev/null; then
+          echo "== staged at $(date +%T)"
+        else
+          rm -rf "$PART"; echo "== not staged by this job (failed, or another job finished first)"
+        fi
+      else
+        echo "== $BASE has $((FREE / 1048576)) GB free, $((NEED / 1048576)) GB needed: loading from $MODEL"
+      fi
+    fi
+  ) 9>"$BASE/.stage.lock"
+  [ "$(cat "$LOCAL/.staged" 2>/dev/null)" = "$NEED" ] && MODEL=$LOCAL
+fi
+echo "== model $MODEL"
+
 echo "== shard $I/$N of $SPLIT -> $OUT  job ${SLURM_JOB_ID:-local}  host $(hostname)  start $(date)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
 "$PY" -c "import torch, vllm; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available(), '| vllm', vllm.__version__)"
@@ -63,6 +94,6 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader ||
 # --deadline: about 45 min below the 12 h limit, the run skips thinking samples for a shop once it is behind pace
 # shellcheck disable=SC2086
 "$PY" -m datamate.predict --data "data/$SPLIT" --output "$OUT/shard$I" --shard "$I/$N" "${IDS_ARG[@]}" \
-  --model "${MODEL_DIR:-models/Qwen3.5-9B}" --lora "${LORA_DIR:-adapters/sql_rft_v3}" --fewshot assets/fewshot_bank.jsonl \
+  --model "$MODEL" --lora "${LORA_DIR:-adapters/sql_rft_v3}" --fewshot assets/fewshot_bank.jsonl \
   "${DATAMATE_FLAGS[@]}" --engine "$DATAMATE_ENGINE" --save-prompts --deadline "${DEADLINE:-40500}" "${LAYERS[@]}" ${EXTRA:-}
 echo "== done $(date)"

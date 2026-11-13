@@ -148,4 +148,8 @@ Lỗi hay gặp:
 - `FP8 KV cache is not supported by the Triton attention backend on NVIDIA A100`: KV cache fp8 cần GPU SM 8.9+. `predict.sbatch`
   tự bỏ `kv_cache_dtype` khi GPU dưới SM 8.9 (dòng `== GPU compute capability 8.0 < 8.9` trong log); trọng số vẫn fp8.
   Kết quả vì thế có thể khác bản nộp (chạy trên GPU có KV cache fp8) ở một số câu.
+- Log đứng ở `Loading safetensors checkpoint shards: 0/4`: vLLM đọc model qua NFS bị treo. `predict.sbatch` chép model
+  một lần vào ổ cục bộ của node (`/tmp/$USER-models`, cần khoảng 20 GB trống; các job sau trên cùng node dùng lại), log in
+  `== staging ...` rồi `== model /tmp/...`. Thiếu chỗ thì nạp thẳng từ NFS. `STAGE=0` để tắt, `STAGE_DIR` để đổi thư mục.
+  Dọn khi xong việc: `srun --nodelist=gpu03 rm -rf /tmp/$USER-models`.
 - Hết bộ nhớ GPU: giảm `max_num_seqs` trong `ENGINE`, hoặc `GPU_MEM=0.85`.
